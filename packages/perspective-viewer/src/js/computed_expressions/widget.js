@@ -13,7 +13,7 @@ import template from "../../html/computed_expression_widget.html";
 
 import style from "../../less/computed_expression_widget.less";
 
-import {ColumnNameTokenType, FunctionTokenType, OperatorTokenType} from "./lexer";
+import {ColumnNameTokenType, FunctionTokenType, OperatorTokenType, clean_tokens} from "./lexer";
 import {tokenMatcher} from "chevrotain";
 import {AutocompleteSuggestion} from "../autocomplete_widget.js";
 
@@ -25,6 +25,7 @@ class ComputedExpressionWidget extends HTMLElement {
         super();
 
         this._parsed_expression = undefined;
+        this._tokens = [];
         this.expressions = [];
         this._valid = false;
     }
@@ -126,6 +127,8 @@ class ComputedExpressionWidget extends HTMLElement {
             output.push(`<span class="psp-expression__${class_name}">${content}</span>`);
         }
 
+        this._tokens = clean_tokens(lex_result.tokens);
+
         return output.join("");
     }
 
@@ -172,10 +175,11 @@ class ComputedExpressionWidget extends HTMLElement {
              * - the immediately preceding token is an operator.
              */
             const name_fragments = expression.match(/(["'])[\s\w()]*?$/);
-            const has_name_fragments = name_fragments && name_fragments.length > 0 && name_fragments[0] !== '" ';
-            const last_column_name = this._computed_expression_parser.get_last_column_name(lex_result, 1);
-            const last_operator = this._computed_expression_parser.get_last_function_or_operator(lex_result, 1);
-            const show_column_names = (has_name_fragments && !last_column_name) || last_operator;
+            const has_name_fragments = name_fragments && name_fragments.length > 0 && !/['"]\s/.test(name_fragments[0]);
+            const last_column_name = this._computed_expression_parser.get_last_token_with_types([ColumnNameTokenType], lex_result, 1);
+            const last_operator = this._computed_expression_parser.get_last_token_with_types([FunctionTokenType, OperatorTokenType], lex_result, 1);
+            const is_alias = this._computed_expression_parser.get_last_token_with_name("as", lex_result, 1);
+            const show_column_names = (!is_alias && has_name_fragments && !last_column_name) || last_operator;
 
             if (show_column_names) {
                 let fragment = "";
@@ -183,7 +187,7 @@ class ComputedExpressionWidget extends HTMLElement {
                 let suggestions;
 
                 // check previous token to see if it is a function or operator
-                const last_function_or_operator = this._computed_expression_parser.get_last_function_or_operator(lex_result);
+                const last_function_or_operator = this._computed_expression_parser.get_last_token_with_types([FunctionTokenType, OperatorTokenType], lex_result);
 
                 if (last_function_or_operator) {
                     const input_types = last_function_or_operator.tokenType.input_types;
@@ -216,6 +220,9 @@ class ComputedExpressionWidget extends HTMLElement {
                 if (suggestions.length > 0) {
                     // Show autocomplete and not error box
                     this._autocomplete.render(suggestions);
+                    return;
+                } else if (is_alias) {
+                    // don't show error if last token is alias
                     return;
                 }
             }
@@ -349,20 +356,40 @@ class ComputedExpressionWidget extends HTMLElement {
      * @param {String} new_value the value selected from the autocomplete item.
      */
     _autocomplete_replace(new_value) {
-        // TODO: token-based replace system
         const old_value = this._expression_editor.get_text();
         const last_input = this._computed_expression_parser.extract_partial_function(old_value);
+
         if (last_input && last_input !== '"') {
             // replace the fragment with the full function/operator
             const final_value = old_value.substring(0, old_value.length - last_input.length) + new_value;
             this._expression_editor._edit_area.innerText = final_value;
         } else {
             // Check whether we are appending a column name
-            const last_quote_index = old_value.search(/["']$/);
-            if (last_quote_index !== -1 && new_value.search(/["']$/) !== -1) {
-                const final_value = old_value.substring(0, last_quote_index) + new_value;
+            // FIXME: clean up this affront against all things good
+            const last_word = old_value.substring(old_value.lastIndexOf(" ")).trim();
+            const last_word_is_column_name = /["'].*[^'"]/.test(last_word) || last_word === '"' || last_word === "'";
+            const new_is_column_name = /(["'])(?<column_name>.*?[^\\])\1/y.test(new_value);
+
+            if (last_word_is_column_name && new_is_column_name) {
+                let last_word_idx = old_value.lastIndexOf(last_word);
+                let final_value = old_value.substring(0, last_word_idx);
+
+                // TODO: collapse some of these repeated regex tests
+                const partials_inside_func = /\(['"]\w+$/.exec(last_word);
+
+                if (partials_inside_func[0] && (last_word_idx === 0 || last_word[0] === "(")) {
+                    // replace upto the open quote, but not before it
+                    console.log(final_value, last_word.substring(0, partials_inside_func.index + 1));
+                    final_value += last_word.substring(0, partials_inside_func.index + 1);
+                }
+
+                final_value += new_value;
+
                 this._expression_editor._edit_area.innerText = final_value;
             } else {
+                if (last_word[last_word.length - 1] === '"' || last_word[last_word.length - 1] === '"') {
+                    this._expression_editor._edit_area.innerText = this._expression_editor._edit_area.innerText.substring(0, this._expression_editor._edit_area.innerText.length - 1);
+                }
                 // Append the autocomplete value
                 this._expression_editor._edit_area.innerText += new_value;
             }
@@ -387,10 +414,12 @@ class ComputedExpressionWidget extends HTMLElement {
 
     // UI actions
     _clear_expression_editor() {
+        this._tokens = [];
         this._expression_editor.clear_content();
     }
 
     _close_expression_widget() {
+        this._tokens = [];
         this.style.display = "none";
         this._side_panel_actions.style.display = "flex";
         this._clear_error();
