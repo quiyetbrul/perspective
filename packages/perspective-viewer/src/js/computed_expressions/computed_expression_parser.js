@@ -11,6 +11,7 @@ import {PerspectiveLexerErrorMessage} from "./error";
 import {clean_tokens, Comma, ColumnName, As, Whitespace, LeftParen, RightParen, OperatorTokenType, FunctionTokenType, UpperLowerCaseTokenType, ColumnNameTokenType} from "./lexer";
 import {ComputedExpressionColumnParser} from "./parser";
 import {COMPUTED_FUNCTION_FORMATTERS} from "./formatter";
+import {AutocompleteSuggestion} from "../autocomplete_widget";
 
 const token_types = {FunctionTokenType, OperatorTokenType};
 
@@ -162,6 +163,17 @@ class PerspectiveComputedExpressionParser {
             // can be matched.
             return expression.substring(paren_index).replace("(", "");
         }
+    }
+
+    /**
+     * Given an expression, extract the last fragment, i.e. partial function,
+     * operator, or partial column name.
+     *
+     * @param {String} expression
+     */
+    extract_last_fragment(expression) {
+        // TODO: finish
+        return expression;
     }
 
     /**
@@ -566,10 +578,7 @@ class PerspectiveComputedExpressionParser {
                 value = `${value} `;
             }
 
-            suggestions_with_metadata.push({
-                label,
-                value
-            });
+            suggestions_with_metadata.push(new AutocompleteSuggestion(label, value));
         }
 
         return suggestions_with_metadata;

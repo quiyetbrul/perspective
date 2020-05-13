@@ -15,6 +15,7 @@ import style from "../../less/computed_expression_widget.less";
 
 import {ColumnNameTokenType, FunctionTokenType, OperatorTokenType} from "./lexer";
 import {tokenMatcher} from "chevrotain";
+import {AutocompleteSuggestion} from "../autocomplete_widget.js";
 
 // Eslint complains here because we don't do anything, but actually we globally
 // register this class as a CustomElement
@@ -26,7 +27,6 @@ class ComputedExpressionWidget extends HTMLElement {
         this._parsed_expression = undefined;
         this.expressions = [];
         this._valid = false;
-        this._autocomplete_index = -1;
     }
 
     connectedCallback() {
@@ -34,6 +34,10 @@ class ComputedExpressionWidget extends HTMLElement {
         this._register_callbacks();
         this._expression_editor.set_renderer(this.render_expression.bind(this));
         this._editor_observer = new MutationObserver(this._resize_editor.bind(this));
+
+        // Implement the `reposition` method, and bind it to the autocomplete
+        // instance instead of the widget instance.
+        this._autocomplete.reposition = this._position_autocomplete.bind(this);
     }
 
     /**
@@ -81,10 +85,7 @@ class ComputedExpressionWidget extends HTMLElement {
         // label = what is shown in the autocomplete DOM
         // value = what the fragment in the editor will be replaced with
         return names.map(name => {
-            return {
-                label: name,
-                value: `"${name}"`
-            };
+            return new AutocompleteSuggestion(name, `"${name}"`);
         });
     }
 
@@ -95,7 +96,7 @@ class ComputedExpressionWidget extends HTMLElement {
      * @param {String} expression
      */
     render_expression(expression) {
-        this._clear_autocomplete();
+        this._autocomplete.clear();
         const lex_result = this._computed_expression_parser._lexer.tokenize(expression);
 
         if (lex_result.errors.length > 0) {
@@ -141,7 +142,7 @@ class ComputedExpressionWidget extends HTMLElement {
      */
     @throttlePromise
     async _validate_expression(ev) {
-        this._clear_autocomplete();
+        this._autocomplete.clear();
         const expression = ev.detail.text;
 
         if (expression.length === 0) {
@@ -204,21 +205,17 @@ class ComputedExpressionWidget extends HTMLElement {
                 if (last_operator) {
                     // Make sure we have opening parenthesis if the last token
                     // is an operator
-                    this.render_autocomplete("", [
-                        {
-                            label: "(",
-                            value: "("
-                        }
-                    ]);
+                    this._autocomplete.render([new AutocompleteSuggestion("(", "(")]);
                 }
 
-                this.render_autocomplete(expression, suggestions, true);
+                // Render column names inside autocomplete
+                this._autocomplete.render(suggestions, true);
                 return;
             } else {
                 const suggestions = this._computed_expression_parser.get_autocomplete_suggestions(expression, lex_result);
                 if (suggestions.length > 0) {
                     // Show autocomplete and not error box
-                    this.render_autocomplete(expression, suggestions);
+                    this._autocomplete.render(suggestions);
                     return;
                 }
             }
@@ -284,50 +281,31 @@ class ComputedExpressionWidget extends HTMLElement {
         this.expressions.push(expression);
     }
 
-    render_autocomplete(expression, suggestions, is_column_name) {
-        if (suggestions.length === 0) {
-            this._clear_autocomplete();
-            return;
-        }
-        this._position_autocomplete();
-        this._autocomplete_index = -1;
-        this._autocomplete_container.style.display = "block";
-        this._autocomplete_container.scrollTop = 0;
-        this._autocomplete_container.setAttribute("data-count", suggestions.length);
-        for (const suggestion of suggestions) {
-            const span = document.createElement("span");
-            if (!suggestion.label) {
-                continue;
-            }
-            span.textContent = suggestion.label;
-            span.classList.add("psp-computed-expression-widget__autocomplete--item");
-            if (is_column_name) {
-                span.classList.add("psp-computed-expression-widget__autocomplete--column-name");
-                span.classList.add(this._get_type(suggestion.label));
-            }
-            span.setAttribute("data-value", suggestion.value);
-            this._autocomplete_container.appendChild(span);
-        }
-    }
-
+    /**
+     * Whenever the autocomplete re-renders, position it either at the end
+     * of the cursor or dock it to the bottom of the computed expression widget.
+     *
+     * Do not call this method directly - it is set to override the `reposition`
+     * method of `this._autocomplete` in `connectedCallback`.
+     */
     _position_autocomplete() {
         const editor = this._expression_editor;
         const last_span = this._expression_editor._edit_area.lastChild;
 
         if (editor.get_text().length === 0 || !last_span) {
-            this._autocomplete_container.classList.remove("undocked");
-            this._autocomplete_container.classList.add("docked");
+            this._autocomplete._container.classList.remove("undocked");
+            this._autocomplete._container.classList.add("docked");
             return;
         }
 
         if (editor.offsetWidth === 250) {
-            this._autocomplete_container.removeAttribute("style");
-            this._autocomplete_container.classList.remove("undocked");
-            this._autocomplete_container.classList.add("docked");
+            this._autocomplete._container.removeAttribute("style");
+            this._autocomplete._container.classList.remove("undocked");
+            this._autocomplete._container.classList.add("docked");
             return;
         } else {
-            this._autocomplete_container.classList.remove("docked");
-            this._autocomplete_container.classList.add("undocked");
+            this._autocomplete._container.classList.remove("docked");
+            this._autocomplete._container.classList.add("undocked");
         }
 
         const offset_left = last_span.offsetLeft;
@@ -339,36 +317,39 @@ class ComputedExpressionWidget extends HTMLElement {
 
         // Set width when autocomplete is in right half of editor
         if (left > editor.offsetWidth * 0.5) {
-            this._autocomplete_container.style.width = "150px";
+            this._autocomplete._container.style.width = "150px";
         } else {
-            this._autocomplete_container.style.width = "auto";
+            this._autocomplete._container.style.width = "auto";
         }
 
-        this._autocomplete_container.style.left = `${left}px`;
-        this._autocomplete_container.style.top = `${top}px`;
+        this._autocomplete._container.style.left = `${left}px`;
+        this._autocomplete._container.style.top = `${top}px`;
     }
 
-    _clear_autocomplete() {
-        this._autocomplete_index = -1;
-        this._autocomplete_container.removeAttribute("style");
-        this._autocomplete_container.style.display = "none";
-        this._autocomplete_container.innerHTML = "";
-        this._autocomplete_container.classList.remove("undocked");
-        this._autocomplete_container.classList.add("docked");
-    }
-
+    /**
+     * Generate the initial list of suggestions for the autocomplete, containing
+     * all functions and column names, and render it.
+     */
     _render_initial_autocomplete() {
-        this._clear_autocomplete();
+        this._autocomplete.clear();
         const suggestions = this._computed_expression_parser.get_autocomplete_suggestions("");
+
         if (suggestions.length > 0) {
             // Show autocomplete and not error box
             const column_names = this._make_column_name_suggestions(this._get_view_all_column_names());
-            this.render_autocomplete("", suggestions);
-            this.render_autocomplete("", column_names, true);
+            this._autocomplete.render(suggestions);
+            this._autocomplete.render(column_names, true);
         }
     }
 
+    /**
+     * When an autocomplete item is clicked or selected via keypress,
+     * append or replace the text in the editor.
+     *
+     * @param {String} new_value the value selected from the autocomplete item.
+     */
     _autocomplete_replace(new_value) {
+        // TODO: token-based replace system
         const old_value = this._expression_editor.get_text();
         const last_input = this._computed_expression_parser.extract_partial_function(old_value);
         if (last_input && last_input !== '"') {
@@ -390,46 +371,18 @@ class ComputedExpressionWidget extends HTMLElement {
         this._expression_editor._reset_selection();
         this._expression_editor.update_content();
 
-        this._clear_autocomplete();
+        this._autocomplete.clear();
     }
 
-    _autocomplete_value_click(ev) {
-        if (ev.target && ev.target.matches("span.psp-computed-expression-widget__autocomplete--item")) {
-            this._autocomplete_replace(ev.target.getAttribute("data-value"));
-        }
-    }
-
-    // FIXME: move these out into autocomplete
-    _next() {
-        const count = this._autocomplete_container.children.length;
-        const idx = this._autocomplete_index < count - 1 ? this._autocomplete_index + 1 : count ? 0 : -1;
-        this._go_to(idx);
-    }
-
-    _prev() {
-        const count = this._autocomplete_container.children.length;
-        const position = this._autocomplete_index - 1;
-        const idx = this._autocomplete_index > -1 && position !== -1 ? position : count - 1;
-        this._go_to(idx);
-    }
-
-    _go_to(idx) {
-        // liberally borrowed from awesomplete
-        const children = this._autocomplete_container.children;
-
-        if (this._autocomplete_index > -1) {
-            children[this._autocomplete_index].setAttribute("aria-selected", false);
-        }
-
-        // reset selection
-        this._autocomplete_index = idx;
-
-        if (idx > -1 && children.length > 0) {
-            const multiplier = this._autocomplete_container.clientHeight < 75 ? 3 : 2;
-            children[idx].setAttribute("aria-selected", "true");
-            let scroll_top = children[idx].offsetTop - this._autocomplete_container.offsetTop - this._autocomplete_container.clientHeight + children[idx].clientHeight * multiplier;
-            this._autocomplete_container.scrollTop = scroll_top;
-        }
+    /**
+     * When the autocomplete instance dispatches the
+     * `perspective-autocomplete-item-clicked` event, replace or append the
+     * value to the editor.
+     *
+     * @param {CustomEvent} ev a `perspective-autocomplete-item-clicked` event.
+     */
+    _autocomplete_item_clicked(ev) {
+        this._autocomplete_replace(ev.detail.target.getAttribute("data-value"));
     }
 
     // UI actions
@@ -443,7 +396,7 @@ class ComputedExpressionWidget extends HTMLElement {
         this._clear_error();
         this._disable_save_button();
         this._clear_expression_editor();
-        this._clear_autocomplete();
+        this._autocomplete.clear();
         // Disconnect the observer.
         this._editor_observer.disconnect();
     }
@@ -480,7 +433,8 @@ class ComputedExpressionWidget extends HTMLElement {
     }
 
     _editor_keydown(ev) {
-        // All operations need to be done on `ev.detail`, not `ev`
+        // All operations need to be done on `ev.detail`, not `ev`, as the event
+        // is passed through from the editor.
         switch (ev.detail.key) {
             case "Enter":
                 ev.detail.preventDefault();
@@ -488,11 +442,11 @@ class ComputedExpressionWidget extends HTMLElement {
                 {
                     // If autocomplete is open, select the current autocomplete
                     // value. Otherwise, save the expression.
-                    // TODO: this is an asinine check for whether autocomplete
-                    // is open.
-                    if (getComputedStyle(this._autocomplete_container).display !== "none") {
-                        if (this._autocomplete_index !== -1) {
-                            const value = this._autocomplete_container.children[this._autocomplete_index].getAttribute("data-value");
+                    if (this._autocomplete.displayed === true) {
+                        if (this._autocomplete._selection_index !== -1) {
+                            // TODO: a cleaner `get_value` or `get_item` API
+                            // for keypress selection.
+                            const value = this._autocomplete._container.children[this._autocomplete._selection_index].getAttribute("data-value");
                             this._autocomplete_replace(value);
                         }
                     } else {
@@ -505,8 +459,8 @@ class ComputedExpressionWidget extends HTMLElement {
                 {
                     ev.detail.preventDefault();
                     ev.detail.stopPropagation();
-                    if (getComputedStyle(this._autocomplete_container).display !== "none") {
-                        this._next();
+                    if (this._autocomplete.displayed === true) {
+                        this._autocomplete._next();
                     }
                 }
                 break;
@@ -514,11 +468,20 @@ class ComputedExpressionWidget extends HTMLElement {
                 {
                     ev.detail.preventDefault();
                     ev.detail.stopPropagation();
-                    if (getComputedStyle(this._autocomplete_container).display !== "none") {
-                        this._prev();
+                    if (this._autocomplete.displayed === true) {
+                        this._autocomplete._prev();
                     }
                 }
                 break;
+            case "z": {
+                // prevent Ctrl/Command-z for undo, as it has no effect
+                // inside the editor but will fire keypress events and mess
+                // up the flow.
+                if (ev.detail.metaKey === true || ev.detail.ctrlKey === true) {
+                    ev.detail.preventDefault();
+                    ev.detail.stopPropagation();
+                }
+            }
             default:
                 break;
         }
@@ -531,9 +494,9 @@ class ComputedExpressionWidget extends HTMLElement {
         this._side_panel_actions = this.parentElement.querySelector("#side_panel__actions");
         this._close_button = this.shadowRoot.querySelector("#psp-computed-expression-widget-close");
         this._expression_editor = this.shadowRoot.querySelector("perspective-expression-editor");
-        this._autocomplete_container = this.shadowRoot.querySelector(".psp-computed-expression-widget__autocomplete");
         this._error = this.shadowRoot.querySelector("#psp-computed-expression-widget-error");
         this._save_button = this.shadowRoot.querySelector("#psp-computed-expression-widget-button-save");
+        this._autocomplete = this.shadowRoot.querySelector("#psp-computed-expression-widget-autocomplete");
     }
 
     /**
@@ -543,8 +506,7 @@ class ComputedExpressionWidget extends HTMLElement {
         this._close_button.addEventListener("click", this._close_expression_widget.bind(this));
         this._expression_editor.addEventListener("perspective-expression-editor-rendered", this._validate_expression.bind(this));
         this._expression_editor.addEventListener("perspective-expression-editor-keydown", this._editor_keydown.bind(this));
-        this._autocomplete_container.addEventListener("click", this._autocomplete_value_click.bind(this));
-        this._autocomplete_container.addEventListener("mousedown", ev => ev.preventDefault());
         this._save_button.addEventListener("click", this._save_expression.bind(this));
+        this._autocomplete.addEventListener("perspective-autocomplete-item-clicked", this._autocomplete_item_clicked.bind(this));
     }
 }
