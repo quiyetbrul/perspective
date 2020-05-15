@@ -7,6 +7,10 @@
  *
  */
 
+import {html} from "lit-html";
+
+import {repeat} from "lit-html/directives/repeat";
+
 import {bindTemplate, throttlePromise} from "../utils.js";
 
 import template from "../../html/computed_expression_widget.html";
@@ -14,8 +18,8 @@ import template from "../../html/computed_expression_widget.html";
 import style from "../../less/computed_expression_widget.less";
 
 import {ColumnNameTokenType, FunctionTokenType, OperatorTokenType, clean_tokens} from "./lexer";
+import {ComputedExpressionAutocompleteSuggestion} from "./computed_expression_parser";
 import {tokenMatcher} from "chevrotain";
-import {AutocompleteSuggestion} from "../autocomplete_widget.js";
 
 // Eslint complains here because we don't do anything, but actually we globally
 // register this class as a CustomElement
@@ -86,7 +90,11 @@ class ComputedExpressionWidget extends HTMLElement {
         // label = what is shown in the autocomplete DOM
         // value = what the fragment in the editor will be replaced with
         return names.map(name => {
-            return new AutocompleteSuggestion(name, `"${name}"`, true);
+            return new ComputedExpressionAutocompleteSuggestion({
+                label: name,
+                value: `"${name}"`,
+                is_column_name: true
+            });
         });
     }
 
@@ -132,9 +140,47 @@ class ComputedExpressionWidget extends HTMLElement {
         return output.join("");
     }
 
-    render_error(expression, error) {
-        this._set_error(error, this._error);
-        return `<span class="psp-expression__errored">${expression}</span>`;
+    /**
+     * Given an Array of autocomplete suggestions, transform them to an Array
+     * of `lit-html` templates so they can be rendered inside the autocomplete.
+     *
+     * Because the computed expression autocomplete contains large amounts
+     * of metadata and additional functionality, we create the templates here
+     * and let the autocomplete render the markup without any additional
+     * changes.
+     *
+     * @param {Array<ComputedExpressionAutocompleteSuggestion>} suggestions an
+     * Array of suggestion objects.
+     */
+    make_autocomplete_markup(suggestions) {
+        const make_detail = suggestion => {
+            if (suggestion.signature) {
+                return html`
+                    <div class="psp-autocomplete-item__detail">
+                        <span class="psp-autocomplete-item-detail__item" style="font-weight: bold; margin-bottom: 5px;">${suggestion.signature}</span>
+                        <span class="psp-autocomplete-item-detail__item" style="font-size: 9px">${suggestion.help}</span>
+                    </div>
+                `;
+            } else {
+                return "";
+            }
+        };
+
+        return repeat(
+            suggestions,
+            suggestion => suggestion.label,
+            suggestion =>
+                suggestion.label
+                    ? html`
+                          <div class="psp-autocomplete__item" data-value=${suggestion.value} role="listitem" title=${suggestion.help ? suggestion.help : ""}>
+                              <span class="psp-autocomplete-item__label ${suggestion.is_column_name ? `psp-autocomplete-item__label--column-name ${this._get_type(suggestion.label)}` : ""}">
+                                  ${suggestion.label}
+                              </span>
+                              ${make_detail(suggestion)}
+                          </div>
+                      `
+                    : ""
+        );
     }
 
     /**
@@ -182,7 +228,6 @@ class ComputedExpressionWidget extends HTMLElement {
             const show_column_names = (!is_alias && has_name_fragments && !last_column_name) || last_operator;
 
             if (show_column_names) {
-                let fragment = "";
                 let column_names;
                 let suggestions;
 
@@ -202,24 +247,31 @@ class ComputedExpressionWidget extends HTMLElement {
 
                 // Filter down by `startsWith`
                 if (has_name_fragments) {
-                    fragment = name_fragments[0].substring(1);
+                    const fragment = name_fragments[0].substring(1);
                     suggestions = suggestions.filter(name => name.label.toLowerCase().startsWith(fragment.toLowerCase()));
                 }
 
                 if (last_operator) {
                     // Make sure we have opening parenthesis if the last token
                     // is an operator
-                    suggestions = [new AutocompleteSuggestion("(", "(")].concat(suggestions);
+                    suggestions = [
+                        new ComputedExpressionAutocompleteSuggestion({
+                            label: "(",
+                            value: "("
+                        })
+                    ].concat(suggestions);
                 }
 
                 // Render column names inside autocomplete
-                this._autocomplete.render(suggestions);
+                const markup = this.make_autocomplete_markup(suggestions);
+                this._autocomplete.render(markup);
                 return;
             } else {
                 const suggestions = this._computed_expression_parser.get_autocomplete_suggestions(expression, lex_result);
                 if (suggestions.length > 0) {
                     // Show autocomplete and not error box
-                    this._autocomplete.render(suggestions);
+                    const markup = this.make_autocomplete_markup(suggestions);
+                    this._autocomplete.render(markup);
                     return;
                 } else if (is_alias) {
                     // don't show error if last token is alias
@@ -344,7 +396,8 @@ class ComputedExpressionWidget extends HTMLElement {
         if (suggestions.length > 0) {
             // Show autocomplete and not error box
             const column_names = this._make_column_name_suggestions(this._get_view_all_column_names());
-            this._autocomplete.render(suggestions.concat(column_names));
+            const markup = this.make_autocomplete_markup(suggestions.concat(column_names));
+            this._autocomplete.render(markup);
         }
     }
 
@@ -473,10 +526,8 @@ class ComputedExpressionWidget extends HTMLElement {
                     // If autocomplete is open, select the current autocomplete
                     // value. Otherwise, save the expression.
                     if (this._autocomplete.displayed === true) {
-                        if (this._autocomplete._selection_index !== -1) {
-                            // TODO: a cleaner `get_value` or `get_item` API
-                            // for keypress selection.
-                            const value = this._autocomplete._container.children[this._autocomplete._selection_index].getAttribute("data-value");
+                        const value = this._autocomplete.get_selected_value();
+                        if (value) {
                             this._autocomplete_replace(value);
                         }
                     } else {
