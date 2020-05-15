@@ -211,21 +211,31 @@ class ComputedExpressionWidget extends HTMLElement {
             this._disable_save_button();
             const lex_result = this._computed_expression_parser._lexer.tokenize(expression);
 
-            /**
-             * Show the column name autocomplete if:
-             *
-             * - there is an open quote or open parenthesis
-             * - the immediately preceding token is NOT a column name, i.e. to
-             * prevent the autocomplete from showing after a column name has
-             * been closed with a quote.
-             * - the immediately preceding token is an operator.
-             */
+            // Check if the expression has a fragment of a column name,
+            // i.e. if it's been opened with a quote but not closed
             const name_fragments = expression.match(/(["'])[\s\w()]*?$/);
             const has_name_fragments = name_fragments && name_fragments.length > 0 && !/['"]\s/.test(name_fragments[0]);
+
+            // Make sure that the last valid token in the chain is NOT a column
+            // name, so that we don't show column name autocomplete after it's
+            // been completed.
             const last_column_name = this._computed_expression_parser.get_last_token_with_types([ColumnNameTokenType], lex_result, 1);
+
+            // Force column name autocomplete to show if the last token is an
+            // operator.
             const last_operator = this._computed_expression_parser.get_last_token_with_types([OperatorTokenType], lex_result, 1);
+
+            // But not if the last token is a parenthesis, as that indicates
+            // a closed logical block.
+            const last_paren = this._computed_expression_parser.get_last_token_with_name("rightParen", lex_result, 1);
+
+            // And not if the last token is `as/AS`, as that indicates a custom
+            // column name supplied by the user.
             const is_alias = this._computed_expression_parser.get_last_token_with_name("as", lex_result, 1);
-            const show_column_names = (!is_alias && has_name_fragments && !last_column_name) || last_operator;
+
+            // Use the above criteria to decide whether to show the column name
+            // autocomplete.
+            const show_column_names = (has_name_fragments && !is_alias && !last_column_name && !last_paren) || last_operator;
 
             if (show_column_names) {
                 let column_names;
@@ -441,8 +451,10 @@ class ComputedExpressionWidget extends HTMLElement {
 
                 this._expression_editor._edit_area.innerText = final_value;
             } else {
-                if (last_word[last_word.length - 1] === '"' || last_word[last_word.length - 1] === '"') {
-                    this._expression_editor._edit_area.innerText = this._expression_editor._edit_area.innerText.substring(0, this._expression_editor._edit_area.innerText.length - 1);
+                if (!last_word_is_column_name && (last_word[last_word.length - 1] === '"' || last_word[last_word.length - 1] === '"')) {
+                    // Remove the last quote in strings like `pow2("
+                    const stripped_last = this._expression_editor._edit_area.innerText.substring(0, this._expression_editor._edit_area.innerText.length - 1);
+                    this._expression_editor._edit_area.innerText = stripped_last;
                 }
                 // Append the autocomplete value
                 this._expression_editor._edit_area.innerText += new_value;

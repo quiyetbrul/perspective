@@ -99,7 +99,7 @@ class PerspectiveAutocompleteWidget extends HTMLElement {
      * @param {*} ev
      */
     item_clicked(ev) {
-        if (ev.target && ev.target.matches("span.psp-autocomplete__item")) {
+        if (ev.target && ev.target.matches(".psp-autocomplete__item")) {
             const event = new CustomEvent("perspective-autocomplete-item-clicked", {
                 detail: ev,
                 bubbles: true
@@ -184,7 +184,8 @@ class PerspectiveAutocompleteWidget extends HTMLElement {
         if (idx > -1 && children.length > 0) {
             children[idx].setAttribute("aria-selected", "true");
             children[idx].scrollIntoView(true, {
-                behavior: "smooth"
+                behavior: "smooth",
+                block: "nearest"
             });
         }
     }
